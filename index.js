@@ -1,76 +1,111 @@
-const { default: makeWASocket, useMultiFileAuthState, fetchLatestBaileysVersion, DisconnectReason } = require('@whiskeysockets/baileys');
+const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion } = require('@whiskeysockets/baileys');
 const express = require('express');
-const fs = require('fs');
-const path = require('path');
 const pino = require('pino');
-const app = express();
-const PORT = process.env.PORT || 3000;
-const OWNER = '27674789056';
-const dir = '/tmp/da-licco-session';
-if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-let sock = null;
-let pairCode = '';
-let isConnected = false;
-let startTime = Date.now();
+const fs = require('fs');
 
-async function startBot(){
-  const { version } = await fetchLatestBaileysVersion();
-  const { state, saveCreds } = await useMultiFileAuthState(dir);
-  sock = makeWASocket({ version, logger: pino({level:'silent'}), browser:['Da-Licco','Chrome','1.0.0'], auth: state, printQRInTerminal:false });
-  sock.ev.on('creds.update', saveCreds);
-  if(!state.creds.registered){
-    setTimeout(async ()=>{
-      try{
-        let code = await sock.requestPairingCode(OWNER);
-        pairCode = code;
-        console.log('PAIR CODE: '+code);
-      }catch(e){ console.log('PAIR ERR', e.message); }
-    }, 5000);
-  }
-  sock.ev.on('connection.update', async (u)=>{
-    const { connection, lastDisconnect } = u;
-    console.log('CONNECTION:', connection);
-    if(connection==='open'){ isConnected=true; pairCode=''; try{ const creds=fs.readFileSync(path.join(dir,'creds.json'),'utf8'); console.log('Da-Licco;;;=>'+Buffer.from(creds).toString('base64')); }catch(e){} }
-    if(connection==='close'){ isConnected=false; const code=lastDisconnect?.error?.output?.statusCode; if(code!==DisconnectReason.loggedOut) setTimeout(startBot,3000); }
-  });
-  sock.ev.on('messages.upsert', async ({messages}) => {
-    try{
-      const m = messages[0];
-      if(!m.message) return;
-      const from = m.key.remoteJid;
-      const text = m.message.conversation || m.message.extendedTextMessage?.text || m.message.imageMessage?.caption || m.message.videoMessage?.caption || '';
-      if(!text.startsWith('.')) return;
-      const cmd = text.slice(1).split(' ')[0].toLowerCase().trim();
-      const arg = text.slice(1).split(' ').slice(1).join(' ');
-      if(cmd==='menu' || cmd==='help') return sock.sendMessage(from,{text:'DA LICCO - MENU\n\n.ping .alive .owner .info .time .date .joke .quote .advice .love .hug .kiss .waifu .neko .ai .gpt .play .song .tiktok .yt .tagall .kick .promote .sticker .qr .weather .vv .alwaysonline .uptime'});
-      if(cmd==='ping') return sock.sendMessage(from,{text:'Pong! Da Licco is fast'});
-      if(cmd==='alive') return sock.sendMessage(from,{text:'DA LICCO IS ALIVE 👑\nOwner: Sakhile'});
-      if(cmd==='owner') return sock.sendMessage(from,{text:'Owner: Da Licco\n+27674789056'});
-      if(cmd==='info') return sock.sendMessage(from,{text:'DA LICCO BOT\nOwner: Sakhile\nType .menu'});
-      if(cmd==='time') return sock.sendMessage(from,{text:'Time: '+new Date().toLocaleTimeString('en-ZA',{timeZone:'Africa/Johannesburg'})});
-      if(cmd==='date') return sock.sendMessage(from,{text:'Date: '+new Date().toLocaleDateString('en-ZA',{timeZone:'Africa/Johannesburg'})});
-      if(cmd==='joke') return sock.sendMessage(from,{text:'Why did chicken cross road? To get to Da Licco'});
-      if(cmd==='quote') return sock.sendMessage(from,{text:"Don't wait for opportunity. Create it."});
-      if(cmd==='advice') return sock.sendMessage(from,{text:'Drink water, mind your business.'});
-      if(cmd==='love') return sock.sendMessage(from,{text:'Love: You + Da Licco = 100%'});
-      if(cmd==='hug') return sock.sendMessage(from,{text:'*hugs you*'});
-      if(cmd==='kiss') return sock.sendMessage(from,{text:'*kiss*'});
-      if(cmd==='waifu') return sock.sendMessage(from,{text:'Your Waifu: Da Licco-chan says hi!'});
-      if(cmd==='neko') return sock.sendMessage(from,{text:'Neko! Meow~'});
-      if(cmd==='ai' || cmd==='gpt') return sock.sendMessage(from,{text:'Da Licco AI: '+(arg||'Ask me anything!')});
-      if(cmd==='play' || cmd==='song') return sock.sendMessage(from,{text:'Play: Type .play + song name'});
-      if(cmd==='vv') return sock.sendMessage(from,{text:'VV ON. Reply to a View Once with .vv'});
-      if(cmd==='alwaysonline') return sock.sendMessage(from,{text:'AlwaysOnline: ON'});
-      if(cmd==='uptime') return sock.sendMessage(from,{text:'Uptime: '+Math.floor((Date.now()-startTime)/60000)+' mins'});
-      if(cmd==='weather') return sock.sendMessage(from,{text:'Weather: Sunny 28C in Durban'});
-      if(cmd==='qr') return sock.sendMessage(from,{text:'QR: '+arg});
-    }catch(e){ console.log('MSG ERR', e.message); }
-  });
+const app = express();
+const PORT = process.env.PORT || 10000;
+const bots = {}; // number -> { sock, pairCode, isConnected }
+
+async function startBotForNumber(PHONE) {
+    if (bots[PHONE]) return bots[PHONE];
+    bots[PHONE] = { pairCode: "Loading...", isConnected: false };
+
+    const { state, saveCreds } = await useMultiFileAuthState(`./session-${PHONE}`);
+    const { version } = await fetchLatestBaileysVersion();
+
+    const sock = makeWASocket({
+        version,
+        logger: pino({ level: 'silent' }),
+        printQRInTerminal: false,
+        auth: state,
+        browser: ['Da Licco', 'Chrome', '1.0'],
+        syncFullHistory: false,
+        markOnlineOnConnect: false,
+    });
+    bots[PHONE].sock = sock;
+
+    sock.ev.on('creds.update', saveCreds);
+
+    sock.ev.on('connection.update', async (update) => {
+        const { connection, lastDisconnect } = update;
+        console.log(`[${PHONE}] CONNECTION:`, connection);
+        if (connection === 'open') {
+            bots[PHONE].isConnected = true;
+            bots[PHONE].pairCode = "CONNECTED ✅";
+            console.log(`✅ [${PHONE}] DA LICCO CONNECTED!`);
+        }
+        if (connection === 'close') {
+            bots[PHONE].isConnected = false;
+            const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
+            if (shouldReconnect) {
+                setTimeout(() => { delete bots[PHONE]; startBotForNumber(PHONE); }, 3000);
+            } else {
+                try { fs.rmSync(`./session-${PHONE}`, { recursive: true, force: true }); } catch(e){}
+                delete bots[PHONE];
+            }
+        }
+    });
+
+    // Get pairing code if not registered
+    if (!sock.authState.creds.registered) {
+        setTimeout(async () => {
+            try {
+                const code = await sock.requestPairingCode(PHONE);
+                bots[PHONE].pairCode = code;
+                console.log(`PAIR CODE FOR ${PHONE} : ${code}`);
+            } catch (err) {
+                console.log(`[${PHONE}] PAIR ERR`, err.message);
+                bots[PHONE].pairCode = "Error - Refresh";
+            }
+        }, 4000);
+    }
+
+    sock.ev.on('messages.upsert', async ({ messages }) => {
+        const m = messages[0];
+        if (!m.message || m.key.fromMe) return;
+        const from = m.key.remoteJid;
+        const text = m.message.conversation || m.message.extendedTextMessage?.text || "";
+        if (text.toLowerCase() === '.menu' || text.toLowerCase() === '.ping') {
+            await sock.sendMessage(from, { text: "👑 *DA LICCO IS ONLINE* 👑\n\nBot by Da Licco\nYour number: " + PHONE });
+        }
+    });
+
+    return bots[PHONE];
 }
-app.get('/', (req,res)=>{
-  if(isConnected) return res.send('<h1>DA LICCO IS CONNECTED 👑</h1><p>Send .ping on WhatsApp</p>');
-  if(pairCode) return res.send('<h1>DA LICCO PAIR CODE</h1><h1 style="font-size:50px;">'+pairCode+'</h1><p>Number: 27674789056</p><p>WhatsApp > Linked devices > Link with phone number > Enter code</p>');
-  return res.send('<h1>DA LICCO IS STARTING...</h1><p>Wait 10 sec then refresh</p>');
+
+// Website - user types their number
+app.get('/', (req, res) => {
+    res.send(`
+    <html><body style="background:#111;color:white;text-align:center;font-family:sans-serif;padding:20px">
+    <h1>👑 DA LICCO 👑</h1>
+    <p>Link Da Licco to YOUR number</p>
+    <form action="/pair" method="GET">
+    <input name="number" placeholder="e.g. 27674789056" style="padding:15px;font-size:18px;width:250px;text-align:center" required />
+    <br><br>
+    <button style="padding:15px 30px;font-size:18px;background:#25D366;border:none;border-radius:10px">GET MY CODE</button>
+    </form>
+    <p style="color:#888">Enter number without + , no spaces. Example: 27674789056</p>
+    </body></html>`);
 });
-app.listen(PORT, ()=> console.log('Da Licco on '+PORT));
-startBot().catch(()=>{});
+
+app.get('/pair', async (req, res) => {
+    let number = (req.query.number || "").replace(/[^0-9]/g, "");
+    if (!number) return res.redirect('/');
+    await startBotForNumber(number);
+    // Wait a bit for code to generate
+    setTimeout(() => {
+        const b = bots[number];
+        res.send(`
+        <html><body style="background:#111;color:white;text-align:center;font-family:sans-serif;padding-top:40px">
+        <h1>👑 DA LICCO 👑</h1>
+        <p>Number: ${number}</p>
+        <h2 style="font-size:45px;letter-spacing:5px;color:#25D366">${b?.pairCode || "Loading..."}</h2>
+        <p>${b?.isConnected ? "✅ CONNECTED" : "Go to WhatsApp > Linked Devices > Link with phone number > Type this code FAST"}</p>
+        <button onclick="location.reload()" style="padding:15px 30px;font-size:18px">REFRESH CODE</button>
+        <br><br><a href="/" style="color:#25D366">Link another number</a>
+        </body></html>`);
+    }, 6000);
+});
+
+app.listen(PORT, () => console.log("Web on", PORT));
