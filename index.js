@@ -1,6 +1,35 @@
 const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, delay } = require("@whiskeysockets/baileys");
 const pino = require("pino");
+const fs = require("fs");
+const path = require("path");
 const config = require("./config");
+
+// ===== LOAD COMMANDS FILE =====
+let commands = {};
+const commandsPath = path.join(__dirname, "commands");
+const commandsFile = path.join(__dirname, "commands.js");
+
+if (fs.existsSync(commandsFile)) {
+    // If you have single commands.js file
+    commands = require(commandsFile);
+    console.log("✅ Loaded commands.js file");
+} else if (fs.existsSync(commandsPath)) {
+    // If you have commands folder with many files
+    fs.readdirSync(commandsPath).forEach(file => {
+        if (file.endsWith(".js")) {
+            try {
+                const cmd = require(path.join(commandsPath, file));
+                const name = cmd.name || file.replace(".js", "");
+                commands[name] = cmd;
+                console.log(`✅ Loaded command: ${name}`);
+            } catch (e) {
+                console.log(`❌ Failed command ${file}:`, e.message);
+            }
+        }
+    });
+} else {
+    console.log("⚠️ No commands file/folder found - bot will still connect");
+}
 
 async function startBot() {
     const { state, saveCreds } = await useMultiFileAuthState(config.SESSION_ID);
@@ -12,18 +41,16 @@ async function startBot() {
         browser: ["DA LICCO ⚡", "Chrome", "1.0.0"]
     });
 
-    // FIXED: Use state.creds, not sock.authState
+    // Pairing Code
     if (!state.creds.registered) {
         setTimeout(async () => {
             try {
-                let phoneNumber = config.OWNER_NUMBER;
+                const phoneNumber = config.OWNER_NUMBER;
                 if (phoneNumber) {
-                    let code = await sock.requestPairingCode(phoneNumber);
+                    const code = await sock.requestPairingCode(phoneNumber);
                     console.log(`\n======================================`);
                     console.log(`🔑 DA LICCO PAIRING CODE: ${code}`);
                     console.log(`======================================\n`);
-                } else {
-                    console.log("❌ Please configure OWNER_NUMBER");
                 }
             } catch (e) {
                 console.log("Pairing error:", e.message);
@@ -35,7 +62,6 @@ async function startBot() {
 
     sock.ev.on("connection.update", async (update) => {
         const { connection, lastDisconnect } = update;
-        
         if (connection === "close") {
             const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
             console.log(`Connection closed. Reconnect? ${shouldReconnect}`);
@@ -46,20 +72,44 @@ async function startBot() {
                 console.log("❌ Logged out. Delete session and pair again.");
             }
         } else if (connection === "open") {
-            console.log("✅ DA LICCO ⚡ Connected successfully!");
+            console.log("✅ DA LICCO ⚡ Connected!");
+            console.log(`✅ Loaded ${Object.keys(commands).length} commands`);
         }
     });
 
-    // FIXED: Added message handler so commands work
+    // ===== RUN COMMANDS FROM YOUR COMMANDS FILE =====
     sock.ev.on("messages.upsert", async ({ messages }) => {
         const m = messages[0];
         if (!m.message || m.key.fromMe) return;
-        const body = m.message.conversation || m.message.extendedTextMessage?.text || "";
-        console.log(`📩 Message from ${m.key.remoteJid}: ${body}`);
-        // Your plugins / commands go here
-        if (body === ".ping") {
-            await sock.sendMessage(m.key.remoteJid, { text: "🏓 DA LICCO ⚡ Pong! Bot is Online!" });
+
+        const from = m.key.remoteJid;
+        const body = m.message.conversation || m.message.extendedTextMessage?.text || m.message.imageMessage?.caption || m.message.videoMessage?.caption || "";
+        const prefix = config.PREFIX || ".";
+
+        if (!body.startsWith(prefix)) return;
+
+        const args = body.slice(prefix.length).trim().split(/ +/);
+        const commandName = args.shift().toLowerCase();
+
+        // Find command in your commands file
+        const cmd = commands[commandName];
+
+        if (!cmd) return; // Not a command, ignore
+
+        try {
+            // Supports both styles: module.exports = async (sock, m, args) OR { run: async() }
+            if (typeof cmd === "function") {
+                await cmd(sock, m, args, config);
+            } else if (typeof cmd.run === "function") {
+                await cmd.run(sock, m, args, config);
+            } else if (typeof cmd.execute === "function") {
+                await cmd.execute(sock, m, args, config);
+            }
+        } catch (e) {
+            console.log(`Command ${commandName} error:`, e.message);
+            await sock.sendMessage(from, { text: `❌ Error in ${commandName}: ${e.message}` });
         }
     });
 }
+
 startBot();
