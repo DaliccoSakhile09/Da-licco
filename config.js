@@ -1,6 +1,6 @@
 module.exports = {
   OWNER: '27674789056',
-  LOGO: 'https://raw.githubusercontent.com/DaliccoSak/Da-licco/main/logo.png',
+  LOGO: 'https://raw.githubusercontent.com/DaliccoSak/Da-licco/main/IMG-20261031-WA0061.jpg',
   PORT: process.env.PORT || 3000,
   settings: { autoviewonce: true, antidelete: true, antilink: false, antimentionstatus: true }
 };
