@@ -3,28 +3,30 @@ const pino = require("pino");
 const config = require("./config");
 
 async function startBot() {
-    // Force path alignment with your Render Persistent Disk Mount Point
-    const { state, saveCreds } = await useMultiFileAuthState("/app/auth_info_baileys");
+    const { state, saveCreds } = await useMultiFileAuthState(config.SESSION_ID);
 
     const sock = makeWASocket({
         auth: state,
         logger: pino({ level: "silent" }),
-        printQRInTerminal: false, // Turn off QR generation
-        browser: ["Ubuntu", "Chrome", "20.0.04"] // Standard modern user agent
+        printQRInTerminal: false,
+        browser: ["DA LICCO ⚡", "Chrome", "1.0.0"]
     });
 
-    // Check if we need to request a Pairing Code (only runs if not logged in)
-    if (!sock.authState.creds.registered) {
+    // FIXED: Use state.creds, not sock.authState
+    if (!state.creds.registered) {
         setTimeout(async () => {
-            // Put your actual bot mobile number (with country code, no +, no spaces) in your config.js or Render Env variables
-            let phoneNumber = config.OWNER_NUMBER; 
-            if (phoneNumber) {
-                let code = await sock.requestPairingCode(phoneNumber);
-                console.log(`\n======================================`);
-                console.log(`🔑 YOUR WHATSAPP BOT PAIRING CODE: ${code}`);
-                console.log(`======================================\n`);
-            } else {
-                console.log("❌ Please configure OWNER_NUMBER to request a phone pairing code.");
+            try {
+                let phoneNumber = config.OWNER_NUMBER;
+                if (phoneNumber) {
+                    let code = await sock.requestPairingCode(phoneNumber);
+                    console.log(`\n======================================`);
+                    console.log(`🔑 DA LICCO PAIRING CODE: ${code}`);
+                    console.log(`======================================\n`);
+                } else {
+                    console.log("❌ Please configure OWNER_NUMBER");
+                }
+            } catch (e) {
+                console.log("Pairing error:", e.message);
             }
         }, 3000);
     }
@@ -35,14 +37,28 @@ async function startBot() {
         const { connection, lastDisconnect } = update;
         
         if (connection === "close") {
-            const reason = lastDisconnect?.error?.output?.statusCode;
-            console.log(`Connection closed. Status Reason Code: ${reason}`);
-            
-            // Avoid tight crash-loops on unexpected server dropouts
-            await delay(5000); 
-            startBot();
+            const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
+            console.log(`Connection closed. Reconnect? ${shouldReconnect}`);
+            if (shouldReconnect) {
+                await delay(5000);
+                startBot();
+            } else {
+                console.log("❌ Logged out. Delete session and pair again.");
+            }
         } else if (connection === "open") {
-            console.log("✅ Bot connected successfully and linked to WhatsApp!");
+            console.log("✅ DA LICCO ⚡ Connected successfully!");
+        }
+    });
+
+    // FIXED: Added message handler so commands work
+    sock.ev.on("messages.upsert", async ({ messages }) => {
+        const m = messages[0];
+        if (!m.message || m.key.fromMe) return;
+        const body = m.message.conversation || m.message.extendedTextMessage?.text || "";
+        console.log(`📩 Message from ${m.key.remoteJid}: ${body}`);
+        // Your plugins / commands go here
+        if (body === ".ping") {
+            await sock.sendMessage(m.key.remoteJid, { text: "🏓 DA LICCO ⚡ Pong! Bot is Online!" });
         }
     });
 }
